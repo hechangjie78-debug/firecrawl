@@ -62,6 +62,13 @@ export function getModel(name: string, provider: Provider = defaultProvider) {
   if (provider === "openai" && modelName.startsWith("o3-mini")) {
     return providerList.openai.chat(modelName);
   }
+  // OpenCode Zen 免费模型仅支持 Chat Completions，不支持 Responses API
+  if (
+    provider === "openai" &&
+    config.OPENAI_BASE_URL?.includes("opencode.ai")
+  ) {
+    return providerList.openai.chat(modelName);
+  }
   return providerList[provider](modelName);
 }
 
