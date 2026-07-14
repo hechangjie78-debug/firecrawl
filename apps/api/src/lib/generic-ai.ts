@@ -8,14 +8,20 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { fireworks } from "@ai-sdk/fireworks";
 import { deepinfra } from "@ai-sdk/deepinfra";
 import { createVertex } from "@ai-sdk/google-vertex";
-import type { LanguageModelV2 } from "@ai-sdk/provider";
+// 仅用于 OpenCode Zen 的模型包装，偷类型以避免 @ai-sdk/provider 间接依赖
+interface LMV2 {
+  readonly specificationVersion: string;
+  readonly provider: string;
+  readonly modelId: string;
+  doGenerate(options: any): Promise<any>;
+}
 
 const OPENCODE_ZEN = !!(
   config.OPENAI_BASE_URL?.includes("opencode.ai") ||
   config.OPENAI_BASE_URL?.includes("zen")
 );
 
-function wrapModel(model: LanguageModelV2): LanguageModelV2 {
+function wrapModel(model: LMV2): LMV2 {
   if (!OPENCODE_ZEN) return model;
   return {
     ...model,
