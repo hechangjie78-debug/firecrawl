@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
-# Firecrawl 一键部署脚本（无容器，裸机/VM 部署）
+# Firecrawl 一键部署脚本（混合架构）
+# 中间件(PostgreSQL/Redis/RabbitMQ) → Docker 容器
+# 应用(Firecrawl API/Workers/Playwright) → 裸机 systemd
 # ============================================================
 set -euo pipefail
 
@@ -13,6 +15,10 @@ GO_VERSION="1.23.8"
 NUQ_WORKER_COUNT=5
 PLAYWRIGHT_PORT=3003
 API_PORT=3002
+
+PG_USER=firecrawl
+PG_PASS=firecrawl
+PG_DB=firecrawl
 
 # ---------- 颜色 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -41,7 +47,6 @@ precheck() {
 # ========== 1. 系统依赖 ==========
 install_system_deps() {
     info "安装系统依赖..."
-    
     apt-get update -qq
     apt-get install -y -qq \
         build-essential pkg-config curl git python3 gnupg \
@@ -51,7 +56,6 @@ install_system_deps() {
         libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
         libpango-1.0-0 libcairo2 libasound2t64 libatspi2.0-0t64 \
         libwayland-client0 libwayland-egl1
-    
     info "系统依赖安装完成"
 }
 
@@ -65,7 +69,6 @@ install_nodejs() {
         fi
         warn "Node.js 版本过低 ($(node -v))，将升级"
     fi
-    
     info "安装 Node.js $NODE_MAJOR ..."
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
@@ -93,7 +96,6 @@ install_go() {
         info "Go $(go version) 已安装，跳过"
         return
     fi
-    
     info "安装 Go $GO_VERSION ..."
     local tarball="go${GO_VERSION}.linux-amd64.tar.gz"
     curl -fsSL "https://go.dev/dl/${tarball}" -o "/tmp/${tarball}"
@@ -104,81 +106,130 @@ install_go() {
     info "Go $(go version) 安装完成"
 }
 
-# ========== 5. PostgreSQL ==========
-install_postgresql() {
-    if command -v psql &>/dev/null; then
-        info "PostgreSQL 已安装，跳过"
+# ========== 5. Docker ==========
+install_docker() {
+    if command -v docker &>/dev/null; then
+        info "Docker $(docker --version) 已安装，跳过"
         return
     fi
-    info "安装 PostgreSQL 17 ..."
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-        > /etc/apt/sources.list.d/pgdg.list
-    apt-get update -qq && apt-get install -y -qq postgresql-17 postgresql-17-cron postgresql-client-17
-    info "PostgreSQL 安装完成"
+    info "安装 Docker ..."
+    curl -fsSL https://get.docker.com | bash
+    systemctl enable docker --now
+    info "Docker $(docker --version) 安装完成"
 }
 
-# ========== 6. Redis ==========
-install_redis() {
-    if command -v redis-server &>/dev/null; then
-        info "Redis 已安装，跳过"
-        return
-    fi
-    info "安装 Redis ..."
-    apt-get install -y -qq redis-server
-    info "Redis 安装完成"
+# ========== 6. Docker Compose（inline，中间件） ==========
+create_compose_file() {
+    local compose_dir="$INSTALL_DIR/deploy"
+    mkdir -p "$compose_dir"
+
+    cat > "$compose_dir/docker-compose-infra.yml" <<EOF
+version: "3.9"
+name: firecrawl-infra
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASS}
+      POSTGRES_DB: ${PG_DB}
+    volumes:
+      - firecrawl-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - firecrawl-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - firecrawl-rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  firecrawl-pgdata:
+  firecrawl-redisdata:
+  firecrawl-rabbitmqdata:
+EOF
+    ok "docker-compose-infra.yml 已生成"
 }
 
-# ========== 7. RabbitMQ ==========
-install_rabbitmq() {
-    if command -v rabbitmq-server &>/dev/null; then
-        info "RabbitMQ 已安装，跳过"
-        return
-    fi
-    info "安装 RabbitMQ ..."
-    curl -fsSL https://github.com/rabbitmq/signing-keys/releases/download/3.0/rabbitmq-release-signing-key.asc \
-        | gpg --dearmor -o /usr/share/keyrings/rabbitmq-keyring.gpg
-    
-    echo "deb [signed-by=/usr/share/keyrings/rabbitmq-keyring.gpg] https://ppa.launchpadcontent.net/rabbitmq/rabbitmq-erlang/ubuntu $(lsb_release -cs) main" \
-        > /etc/apt/sources.list.d/rabbitmq.list
-    echo "deb [signed-by=/usr/share/keyrings/rabbitmq-keyring.gpg] https://ppa.launchpadcontent.net/rabbitmq/rabbitmq-server/ubuntu $(lsb_release -cs) main" \
-        >> /etc/apt/sources.list.d/rabbitmq.list
-    
-    apt-get update -qq && apt-get install -y -qq erlang-base erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
-        erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key erlang-runtime-tools erlang-snmp \
-        erlang-ssl erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl rabbitmq-server
-    info "RabbitMQ 安装完成"
-}
+# ========== 启动中间件容器 ==========
+start_middleware() {
+    info "启动中间件容器（PostgreSQL / Redis / RabbitMQ）..."
 
-# ========== 配置服务并启动 ==========
-setup_infra_services() {
-    info "配置基础设施服务..."
+    local compose_dir="$INSTALL_DIR/deploy"
+    cd "$compose_dir"
 
-    # PostgreSQL
-    systemctl enable postgresql --now
-    # 等待 PG 启动
+    # 拉取最新镜像
+    docker compose -f docker-compose-infra.yml pull -q
+
+    # 启动（幂等）
+    docker compose -f docker-compose-infra.yml up -d --remove-orphans
+
+    # 等待 PostgreSQL 就绪
+    info "等待 PostgreSQL 就绪..."
     for i in $(seq 1 30); do
-        if su - postgres -c "psql -c 'SELECT 1'" &>/dev/null; then break; fi
-        sleep 1
+        if docker compose -f docker-compose-infra.yml exec -T postgres \
+            pg_isready -U "$PG_USER" -d "$PG_DB" &>/dev/null; then
+            ok "PostgreSQL 就绪"
+            break
+        fi
+        sleep 2
     done
-    # 创建数据库（幂等）
-    su - postgres -c "psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='firecrawl'\" | grep -q 1 || psql -c 'CREATE USER firecrawl WITH PASSWORD '\''firecrawl'\'';'" 2>/dev/null || true
-    su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='firecrawl'\" | grep -q 1 || createdb -O firecrawl firecrawl" 2>/dev/null || true
-    # 安装 pg_cron
-    su - postgres -c "psql -d firecrawl -c 'CREATE EXTENSION IF NOT EXISTS pg_cron;'" 2>/dev/null || true
-    su - postgres -c "psql -d firecrawl -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;'" 2>/dev/null || true
-    ok "PostgreSQL 就绪"
 
-    # Redis
-    systemctl enable redis-server --now
-    ok "Redis 就绪"
+    # 创建 pgcrypto 扩展
+    docker compose -f docker-compose-infra.yml exec -T postgres \
+        psql -U "$PG_USER" -d "$PG_DB" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>/dev/null || true
 
-    # RabbitMQ
-    systemctl enable rabbitmq-server --now
-    rabbitmqctl wait /var/lib/rabbitmq/pid 2>/dev/null || rabbitmqctl wait --timeout 30
-    # 允许 guest 从非 localhost 连接（按需）
-    rabbitmqctl set_permissions -p / guest ".*" ".*" ".*" 2>/dev/null || true
-    ok "RabbitMQ 就绪"
+    # 等待 Redis 就绪
+    info "等待 Redis 就绪..."
+    for i in $(seq 1 15); do
+        if docker compose -f docker-compose-infra.yml exec -T redis \
+            redis-cli ping 2>/dev/null | grep -q PONG; then
+            ok "Redis 就绪"
+            break
+        fi
+        sleep 2
+    done
+
+    # 等待 RabbitMQ 就绪
+    info "等待 RabbitMQ 就绪..."
+    for i in $(seq 1 30); do
+        if docker compose -f docker-compose-infra.yml exec -T rabbitmq \
+            rabbitmq-diagnostics ping 2>/dev/null | grep -q "reply.*ok"; then
+            ok "RabbitMQ 就绪"
+            break
+        fi
+        sleep 2
+    done
+
+    cd "$INSTALL_DIR"
 }
 
 # ========== 克隆 / 拉取 ==========
@@ -201,13 +252,13 @@ clone_or_pull() {
 build_all() {
     info "开始构建..."
 
-    # 1. pnpm install（monorepo 根目录）
+    # 1. pnpm install
     cd "$INSTALL_DIR"
-    if [[ -f pnpm-workspace.yaml || -f pnpm-lock.yaml ]] || ls apps/*/package.json &>/dev/null; then
+    if ls apps/*/package.json &>/dev/null; then
         pnpm install --frozen-lockfile 2>/dev/null || pnpm install
     fi
 
-    # 2. 构建 Go 原生共享库 (libhtml-to-markdown.so)
+    # 2. Go 共享库 (libhtml-to-markdown.so)
     if [[ -d apps/api/sharedLibs/go-html-to-md ]]; then
         info "构建 Go 共享库..."
         cd "$INSTALL_DIR/apps/api/sharedLibs/go-html-to-md"
@@ -216,7 +267,7 @@ build_all() {
         ok "Go 共享库构建完成"
     fi
 
-    # 3. 构建 TypeScript API
+    # 3. TypeScript API
     if [[ -f apps/api/package.json ]]; then
         info "构建 TypeScript API..."
         cd "$INSTALL_DIR/apps/api"
@@ -224,7 +275,7 @@ build_all() {
         ok "API 构建完成"
     fi
 
-    # 4. 构建 Playwright 服务
+    # 4. Playwright 服务
     if [[ -f apps/playwright-service-ts/package.json ]]; then
         info "构建 Playwright 服务..."
         cd "$INSTALL_DIR/apps/playwright-service-ts"
@@ -243,7 +294,7 @@ create_env() {
     info "生成 $env_file ..."
 
     cat > "$env_file" <<EOF
-# ========== Firecrawl Bare-Metal 部署 ==========
+# ========== Firecrawl Hybrid 部署（中间件 Docker，应用裸机）==========
 HOST=0.0.0.0
 PORT=$API_PORT
 IS_PRODUCTION=true
@@ -253,15 +304,15 @@ USE_DB_AUTHENTICATION=false
 REDIS_URL=redis://localhost:6379
 
 # NUQ 队列（PostgreSQL + RabbitMQ）
-NUQ_DATABASE_URL=postgresql://firecrawl:firecrawl@localhost:5432/firecrawl
-NUQ_DATABASE_URL_LISTEN=postgresql://firecrawl:firecrawl@localhost:5432/firecrawl?application_name=firecrawl-nuq
+NUQ_DATABASE_URL=postgresql://${PG_USER}:${PG_PASS}@localhost:5432/${PG_DB}
+NUQ_DATABASE_URL_LISTEN=postgresql://${PG_USER}:${PG_PASS}@localhost:5432/${PG_DB}?application_name=firecrawl-nuq
 NUQ_RABBITMQ_URL=amqp://guest:guest@localhost:5672
 
 # Playwright 渲染服务
 PLAYWRIGHT_MICROSERVICE_URL=http://localhost:${PLAYWRIGHT_PORT}
 
 # Worker 配置
-NUQ_WORKER_COUNT=$NUQ_WORKER_COUNT
+NUQ_WORKER_COUNT=${NUQ_WORKER_COUNT}
 
 # 认证密钥（按需修改）
 BULL_AUTH_KEY=$(openssl rand -hex 16)
@@ -283,7 +334,8 @@ create_systemd_services() {
     cat > /etc/systemd/system/firecrawl-playwright.service <<'EOF'
 [Unit]
 Description=Firecrawl Playwright Rendering Service
-After=network.target
+After=network.target docker.service
+Wants=docker.service
 
 [Service]
 Type=simple
@@ -301,12 +353,11 @@ WantedBy=multi-user.target
 EOF
 
     # ---------- Firecrawl 主服务（API + 所有 Workers） ----------
-    cat > /etc/systemd/system/firecrawl.service <<'EOF'
+    cat > /etc/systemd/system/firecrawl.service <<'SERVICEEOF'
 [Unit]
 Description=Firecrawl API + Workers
-After=network.target postgresql.service redis-server.service rabbitmq-server.service firecrawl-playwright.service
-Requires=postgresql.service redis-server.service rabbitmq-server.service
-Wants=firecrawl-playwright.service
+After=network.target docker.service firecrawl-playwright.service
+Wants=docker.service firecrawl-playwright.service
 
 [Service]
 Type=simple
@@ -317,15 +368,12 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60
 
-# 从 .env 文件加载环境变量
 EnvironmentFile=/opt/firecrawl/.env
-
-# 确保 PATH 中包含全局工具
 Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICEEOF
 
     systemctl daemon-reload
     ok "systemd 服务创建完成"
@@ -349,34 +397,43 @@ start_services() {
         sleep 2
     done
 
-    # 检查 playwright
     if curl -sf "http://localhost:${PLAYWRIGHT_PORT}/health" &>/dev/null; then
         ok "Playwright 渲染服务就绪 http://localhost:${PLAYWRIGHT_PORT}"
     else
-        warn "Playwright 服务可能还在启动中，稍后检查 systemctl status firecrawl-playwright"
+        warn "Playwright 服务可能还在启动中，稍后查看 systemctl status firecrawl-playwright"
     fi
 
-    info ""
-    info "========== 部署完成 =========="
-    info "API 地址:      http://<服务器IP>:${API_PORT}"
-    info "Playwright:    http://localhost:${PLAYWRIGHT_PORT}"
-    info "Bull 看板:     http://<服务器IP>:${API_PORT}/admin/queues"
-    info "Bull 密钥:     $(grep BULL_AUTH_KEY /opt/firecrawl/.env | cut -d= -f2)"
-    info ""
-    info "常用命令:"
-    info "  systemctl status firecrawl         - 查看 API + Workers 状态"
-    info "  systemctl status firecrawl-playwright - 查看渲染服务状态"
-    info "  journalctl -u firecrawl -f         - 实时查看日志"
-    info "  /opt/firecrawl/deploy.sh 可重复运行（幂等）"
-    info "================================="
+    echo ""
+    echo -e "${CYAN}==================================${NC}"
+    echo -e "${CYAN}  部署完成${NC}"
+    echo -e "${CYAN}==================================${NC}"
+    echo ""
+    echo "  API 地址:      http://<服务器IP>:${API_PORT}"
+    echo "  Playwright:    http://localhost:${PLAYWRIGHT_PORT}"
+    echo "  Bull 看板:     http://<服务器IP>:${API_PORT}/admin/queues"
+    echo "  Bull 密钥:     $(grep BULL_AUTH_KEY /opt/firecrawl/.env | cut -d= -f2)"
+    echo "  RabbitMQ 管理: http://localhost:15672 (guest/guest)"
+    echo ""
+    echo "  常用命令:"
+    echo "    systemctl status firecrawl              - API + Workers"
+    echo "    systemctl status firecrawl-playwright   - 渲染服务"
+    echo "    journalctl -u firecrawl -f              - 实时日志"
+    echo ""
+    echo "  中间件容器管理:"
+    echo "    cd /opt/firecrawl/deploy && docker compose -f docker-compose-infra.yml ps"
+    echo "    cd /opt/firecrawl/deploy && docker compose -f docker-compose-infra.yml logs -f"
+    echo ""
+    echo "  ./deploy.sh 可重复运行（幂等），自动拉取最新代码重建"
+    echo "=================================="
 }
 
 # ========== 主流程 ==========
 main() {
     echo ""
-    echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN}  Firecrawl 一键部署脚本（无容器）${NC}"
-    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  Firecrawl 一键部署（混合架构）${NC}"
+    echo -e "${CYAN}  中间件 → Docker  |  应用 → 裸机  ${NC}"
+    echo -e "${CYAN}========================================${NC}"
     echo ""
 
     precheck
@@ -384,10 +441,9 @@ main() {
     install_nodejs
     install_go
     install_pnpm
-    install_postgresql
-    install_redis
-    install_rabbitmq
-    setup_infra_services
+    install_docker
+    create_compose_file
+    start_middleware
     clone_or_pull
     build_all
     create_env
