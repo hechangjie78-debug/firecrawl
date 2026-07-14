@@ -29,6 +29,13 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 ok()    { echo -e "${CYAN}[OK]${NC}    $1"; }
 
+# ---------- 全局状态（环境检查后写入） ----------
+NEED_NODEJS=false
+NEED_GO=false
+NEED_RUST=false
+NEED_PNPM=false
+NEED_DOCKER=false
+
 # ---------- 前置检查 ----------
 precheck() {
     if [[ $EUID -ne 0 ]]; then
@@ -45,8 +52,67 @@ precheck() {
     info "前置检查通过"
 }
 
+# ========== 环境检查（先扫描一轮，标记缺失项） ==========
+check_environment() {
+    echo ""
+    echo -e "${CYAN}── 环境检查 ──────────────────────────────────────${NC}"
+
+    local all_ok=true
+
+    # Node.js
+    if command -v node &>/dev/null; then
+        local ver=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [[ $ver -ge $NODE_MAJOR ]]; then
+            ok "Node.js $(node -v)"
+        else
+            warn "Node.js $(node -v)（需要 ≥$NODE_MAJOR）"; NEED_NODEJS=true; all_ok=false
+        fi
+    else
+        warn "Node.js 未安装"; NEED_NODEJS=true; all_ok=false
+    fi
+
+    # Go
+    if command -v go &>/dev/null && go version | grep -q "go${GO_VERSION%.*}"; then
+        ok "Go $(go version | sed 's/.*go\([0-9.]*\).*/go\1/')"
+    else
+        warn "Go $GO_VERSION 未安装"; NEED_GO=true; all_ok=false
+    fi
+
+    # Rust
+    if command -v cargo &>/dev/null; then
+        ok "Rust $(rustc --version | sed 's/rustc //')"
+    else
+        warn "Rust (cargo) 未安装"; NEED_RUST=true; all_ok=false
+    fi
+
+    # pnpm
+    if command -v pnpm &>/dev/null; then
+        ok "pnpm $(pnpm -v)"
+    else
+        warn "pnpm 未安装"; NEED_PNPM=true; all_ok=false
+    fi
+
+    # Docker
+    if command -v docker &>/dev/null; then
+        ok "Docker $(docker --version | sed 's/Docker version //;s/, build.*//')"
+    else
+        warn "Docker 未安装"; NEED_DOCKER=true; all_ok=false
+    fi
+
+    echo -e "${CYAN}──────────────────────────────────────────────────${NC}"
+    echo ""
+
+    if $all_ok; then
+        info "所有依赖已就绪，跳过安装步骤"
+    else
+        info "部分依赖缺失，开始安装..."
+    fi
+}
+
 # ========== 1. 系统依赖 ==========
 install_system_deps() {
+    # 检查一个关键包来判断是否已装过
+    dpkg -s build-essential &>/dev/null && return 0
     info "安装系统依赖..."
     apt-get update -qq
     apt-get install -y -qq \
@@ -57,14 +123,7 @@ install_system_deps() {
 
 # ========== 2. Node.js ==========
 install_nodejs() {
-    if command -v node &>/dev/null; then
-        local ver=$(node -v | sed 's/v//' | cut -d. -f1)
-        if [[ $ver -ge $NODE_MAJOR ]]; then
-            info "Node.js $(node -v) 已安装，跳过"
-            return
-        fi
-        warn "Node.js 版本过低 ($(node -v))，将升级"
-    fi
+    $NEED_NODEJS || return 0
     info "安装 Node.js $NODE_MAJOR ..."
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
@@ -78,20 +137,14 @@ install_nodejs() {
 
 # ========== 3. pnpm ==========
 install_pnpm() {
-    if command -v pnpm &>/dev/null; then
-        info "pnpm $(pnpm -v) 已安装，跳过"
-        return
-    fi
+    $NEED_PNPM || return 0
     npm install -g pnpm
     info "pnpm $(pnpm -v) 安装完成"
 }
 
 # ========== 4. Go ==========
 install_go() {
-    if command -v go &>/dev/null && go version | grep -q "go${GO_VERSION%.*}"; then
-        info "Go $(go version) 已安装，跳过"
-        return
-    fi
+    $NEED_GO || return 0
     info "安装 Go $GO_VERSION ..."
     local tarball="go${GO_VERSION}.linux-amd64.tar.gz"
     curl -fsSL "https://go.dev/dl/${tarball}" -o "/tmp/${tarball}"
@@ -104,10 +157,7 @@ install_go() {
 
 # ========== 5. Rust ==========
 install_rust() {
-    if command -v cargo &>/dev/null; then
-        info "Rust $(rustc --version) 已安装，跳过"
-        return
-    fi
+    $NEED_RUST || return 0
     info "安装 Rust ..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     # 使得在当前 shell 和后续 systemd 中都能找到 cargo
@@ -118,10 +168,7 @@ install_rust() {
 
 # ========== 6. Docker ==========
 install_docker() {
-    if command -v docker &>/dev/null; then
-        info "Docker $(docker --version) 已安装，跳过"
-        return
-    fi
+    $NEED_DOCKER || return 0
     info "安装 Docker ..."
     curl -fsSL https://get.docker.com | bash
     systemctl enable docker --now
@@ -474,6 +521,7 @@ main() {
     echo ""
 
     precheck
+    check_environment
     install_system_deps
     install_nodejs
     install_go
