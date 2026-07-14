@@ -102,7 +102,21 @@ install_go() {
     info "Go $(go version) 安装完成"
 }
 
-# ========== 5. Docker ==========
+# ========== 5. Rust ==========
+install_rust() {
+    if command -v cargo &>/dev/null; then
+        info "Rust $(rustc --version) 已安装，跳过"
+        return
+    fi
+    info "安装 Rust ..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # 使得在当前 shell 和后续 systemd 中都能找到 cargo
+    ln -sf "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
+    ln -sf "$HOME/.cargo/bin/rustc" /usr/local/bin/rustc
+    info "Rust $(rustc --version) 安装完成"
+}
+
+# ========== 6. Docker ==========
 install_docker() {
     if command -v docker &>/dev/null; then
         info "Docker $(docker --version) 已安装，跳过"
@@ -392,7 +406,7 @@ RestartSec=10
 TimeoutStopSec=60
 
 EnvironmentFile=/opt/firecrawl/.env
-Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/go/bin:/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -463,6 +477,7 @@ main() {
     install_system_deps
     install_nodejs
     install_go
+    install_rust
     install_pnpm
     install_docker
     create_compose_file
