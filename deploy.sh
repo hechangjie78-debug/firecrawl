@@ -268,10 +268,14 @@ clone_or_pull() {
 build_all() {
     info "开始构建..."
 
-    # 1. pnpm install
     cd "$INSTALL_DIR"
-    if ls apps/*/package.json &>/dev/null; then
+
+    # 1. API 依赖 (apps/api 是独立 workspace)
+    if [[ -f apps/api/package.json ]]; then
+        info "安装 API 依赖..."
+        cd "$INSTALL_DIR/apps/api"
         pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+        cd "$INSTALL_DIR"
     fi
 
     # 2. Go 共享库 (libhtml-to-markdown.so)
@@ -280,6 +284,7 @@ build_all() {
         cd "$INSTALL_DIR/apps/api/sharedLibs/go-html-to-md"
         go mod download
         go build -o libhtml-to-markdown.so -buildmode=c-shared html-to-markdown.go
+        cd "$INSTALL_DIR"
         ok "Go 共享库构建完成"
     fi
 
@@ -288,6 +293,7 @@ build_all() {
         info "构建 TypeScript API..."
         cd "$INSTALL_DIR/apps/api"
         npx tsc
+        cd "$INSTALL_DIR"
         ok "API 构建完成"
     fi
 
@@ -298,6 +304,7 @@ build_all() {
         npm install
         npx playwright install chromium --with-deps 2>&1 | tail -5
         npx tsc
+        cd "$INSTALL_DIR"
         ok "Playwright 服务构建完成"
     fi
 
