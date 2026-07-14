@@ -50,13 +50,8 @@ install_system_deps() {
     apt-get update -qq
     apt-get install -y -qq \
         build-essential pkg-config curl git python3 gnupg \
-        ca-certificates lsb-release unzip jq sudo procps \
-        libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
-        libcups2t64 libdrm2 libdbus-1-3 libxkbcommon0 \
-        libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
-        libpango-1.0-0 libcairo2 libasound2t64 libatspi2.0-0t64 \
-        libwayland-client0 libwayland-egl1
-    info "系统依赖安装完成"
+        ca-certificates lsb-release unzip jq sudo procps
+    info "系统依赖安装完成（浏览器依赖由 playwright --with-deps 自动处理）"
 }
 
 # ========== 2. Node.js ==========
