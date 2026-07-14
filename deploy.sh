@@ -7,6 +7,7 @@
 set -euo pipefail
 
 # ---------- 配置（按需修改） ----------
+# 运行时读取 GIT_TOKEN 环境变量做认证（不写死在脚本里）
 REPO_URL="https://github.com/hechangjie78-debug/firecrawl.git"
 BRANCH="main"
 INSTALL_DIR="/opt/firecrawl"
@@ -19,11 +20,6 @@ API_PORT=3002
 PG_USER=firecrawl
 PG_PASS=firecrawl
 PG_DB=firecrawl
-
-# Git 认证（如需访问私有仓库）
-# 方式 1: 直接修改上面的 REPO_URL 为 https://user:token@github.com/...
-# 方式 2: 运行脚本前 export GIT_TOKEN=ghp_xxxx
-GIT_TOKEN="${GIT_TOKEN:-}"
 
 # ---------- 颜色 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -237,32 +233,31 @@ clone_or_pull() {
     local tmp_clone="/tmp/firecrawl-repo-$$"
     rm -rf "$tmp_clone"
 
-    # 构建带 token 的 URL（用于认证）
+    # 构建带 token 的 URL（仅运行时使用，不留文件）
     local auth_url="$REPO_URL"
-    if [[ -n "$GIT_TOKEN" ]]; then
-        auth_url="${REPO_URL/https:\/\//https://${GIT_TOKEN}@}"
+    local git_token="${GIT_TOKEN:-}"
+    if [[ -n "$git_token" ]]; then
+        auth_url="${REPO_URL/https:\/\//https://${git_token}@}"
     fi
 
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         info "拉取最新代码..."
         cd "$INSTALL_DIR"
-        if [[ -n "$GIT_TOKEN" ]]; then
+        if [[ -n "$git_token" ]]; then
             git remote set-url origin "$auth_url"
         fi
         git fetch origin "$BRANCH"
         git reset --hard "origin/$BRANCH"
-        if [[ -n "$GIT_TOKEN" ]]; then
+        if [[ -n "$git_token" ]]; then
             git remote set-url origin "$REPO_URL"
         fi
     else
         info "克隆仓库..."
         git clone --branch "$BRANCH" --depth 1 "$auth_url" "$tmp_clone"
         mkdir -p "$INSTALL_DIR"
-        # rsync 合并内容（保留已有的 deploy.sh 等文件）
         rsync -a --delete "$tmp_clone/" "$INSTALL_DIR/"
         rm -rf "$tmp_clone"
         cd "$INSTALL_DIR"
-        # 恢复 origin 为公开 URL（避免 token 留在 git config）
         git remote set-url origin "$REPO_URL" 2>/dev/null || true
     fi
     cd "$INSTALL_DIR"
