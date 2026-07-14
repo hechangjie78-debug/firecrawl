@@ -424,7 +424,7 @@ Wants=docker.service
 Type=simple
 User=root
 WorkingDirectory=/opt/firecrawl/apps/playwright-service-ts
-ExecStart=/usr/bin/node dist/api.js
+ExecStart=/usr/local/bin/node dist/api.js
 Restart=always
 RestartSec=5
 Environment=PORT=3003
