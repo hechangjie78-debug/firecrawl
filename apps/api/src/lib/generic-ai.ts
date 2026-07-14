@@ -8,14 +8,14 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { fireworks } from "@ai-sdk/fireworks";
 import { deepinfra } from "@ai-sdk/deepinfra";
 import { createVertex } from "@ai-sdk/google-vertex";
-import type { LanguageModel } from "ai";
+import type { LanguageModelV2 } from "@ai-sdk/provider";
 
 const OPENCODE_ZEN = !!(
   config.OPENAI_BASE_URL?.includes("opencode.ai") ||
   config.OPENAI_BASE_URL?.includes("zen")
 );
 
-function wrapModel(model: LanguageModel): LanguageModel {
+function wrapModel(model: LanguageModelV2): LanguageModelV2 {
   if (!OPENCODE_ZEN) return model;
   return {
     ...model,
