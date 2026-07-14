@@ -181,11 +181,11 @@ create_compose_file() {
     mkdir -p "$compose_dir"
 
     cat > "$compose_dir/docker-compose-infra.yml" <<EOF
-version: "3.9"
 name: firecrawl-infra
 services:
   postgres:
-    image: postgres:17
+    # 使用项目自带的 nuq-postgres 镜像，内含 pg_cron + 自动运行 nuq.sql 建表
+    image: ghcr.io/firecrawl/nuq-postgres:latest
     restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"
@@ -260,9 +260,8 @@ start_middleware() {
         sleep 2
     done
 
-    # 创建 pgcrypto 扩展
-    docker compose -f docker-compose-infra.yml exec -T postgres \
-        psql -U "$PG_USER" -d "$PG_DB" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>/dev/null || true
+    # nuq-postgres 镜像已自动运行 nuq.sql（建表 + pgcrypto + pg_cron）
+    ok "NUQ 数据库初始化完成"
 
     # 等待 Redis 就绪
     info "等待 Redis 就绪..."
@@ -447,7 +446,7 @@ Wants=docker.service firecrawl-playwright.service
 Type=simple
 User=root
 WorkingDirectory=/opt/firecrawl/apps/api
-ExecStart=/usr/bin/pnpm harness --start-built
+ExecStart=/usr/local/bin/pnpm harness --start-built
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60
