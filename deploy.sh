@@ -20,6 +20,11 @@ PG_USER=firecrawl
 PG_PASS=firecrawl
 PG_DB=firecrawl
 
+# Git 认证（如需访问私有仓库）
+# 方式 1: 直接修改上面的 REPO_URL 为 https://user:token@github.com/...
+# 方式 2: 运行脚本前 export GIT_TOKEN=ghp_xxxx
+GIT_TOKEN="${GIT_TOKEN:-}"
+
 # ---------- 颜色 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; NC='\033[0m'
@@ -213,11 +218,11 @@ start_middleware() {
         sleep 2
     done
 
-    # 等待 RabbitMQ 就绪
+    # 等待 RabbitMQ 就绪（只看退出码，不看输出文本）
     info "等待 RabbitMQ 就绪..."
     for i in $(seq 1 30); do
         if docker compose -f docker-compose-infra.yml exec -T rabbitmq \
-            rabbitmq-diagnostics ping 2>/dev/null | grep -q "reply.*ok"; then
+            rabbitmq-diagnostics ping &>/dev/null; then
             ok "RabbitMQ 就绪"
             break
         fi
@@ -229,15 +234,36 @@ start_middleware() {
 
 # ========== 克隆 / 拉取 ==========
 clone_or_pull() {
+    local tmp_clone="/tmp/firecrawl-repo-$$"
+    rm -rf "$tmp_clone"
+
+    # 构建带 token 的 URL（用于认证）
+    local auth_url="$REPO_URL"
+    if [[ -n "$GIT_TOKEN" ]]; then
+        auth_url="${REPO_URL/https:\/\//https://${GIT_TOKEN}@}"
+    fi
+
     if [[ -d "$INSTALL_DIR/.git" ]]; then
-        info "仓库已存在，拉取最新代码..."
+        info "拉取最新代码..."
         cd "$INSTALL_DIR"
+        if [[ -n "$GIT_TOKEN" ]]; then
+            git remote set-url origin "$auth_url"
+        fi
         git fetch origin "$BRANCH"
         git reset --hard "origin/$BRANCH"
+        if [[ -n "$GIT_TOKEN" ]]; then
+            git remote set-url origin "$REPO_URL"
+        fi
     else
-        info "克隆仓库 $REPO_URL ..."
-        mkdir -p "$(dirname "$INSTALL_DIR")"
-        git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
+        info "克隆仓库..."
+        git clone --branch "$BRANCH" --depth 1 "$auth_url" "$tmp_clone"
+        mkdir -p "$INSTALL_DIR"
+        # rsync 合并内容（保留已有的 deploy.sh 等文件）
+        rsync -a --delete "$tmp_clone/" "$INSTALL_DIR/"
+        rm -rf "$tmp_clone"
+        cd "$INSTALL_DIR"
+        # 恢复 origin 为公开 URL（避免 token 留在 git config）
+        git remote set-url origin "$REPO_URL" 2>/dev/null || true
     fi
     cd "$INSTALL_DIR"
     info "当前 commit: $(git log --oneline -1)"
