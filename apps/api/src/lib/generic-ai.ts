@@ -8,6 +8,28 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { fireworks } from "@ai-sdk/fireworks";
 import { deepinfra } from "@ai-sdk/deepinfra";
 import { createVertex } from "@ai-sdk/google-vertex";
+import type { LanguageModel } from "ai";
+
+const OPENCODE_ZEN = !!(
+  config.OPENAI_BASE_URL?.includes("opencode.ai") ||
+  config.OPENAI_BASE_URL?.includes("zen")
+);
+
+function wrapModel(model: LanguageModel): LanguageModel {
+  if (!OPENCODE_ZEN) return model;
+  return {
+    ...model,
+    doGenerate: async (options: any) => {
+      if (options.responseFormat?.type === "json_schema") {
+        return model.doGenerate({
+          ...options,
+          responseFormat: { type: "json_object" },
+        });
+      }
+      return model.doGenerate(options);
+    },
+  };
+}
 
 type Provider =
   | "openai"
@@ -60,14 +82,11 @@ export function getModel(name: string, provider: Provider = defaultProvider) {
   const modelName = config.MODEL_NAME || name;
   // o3-mini returns empty text via the Responses API — force Chat Completions
   if (provider === "openai" && modelName.startsWith("o3-mini")) {
-    return providerList.openai.chat(modelName);
+    return wrapModel(providerList.openai.chat(modelName));
   }
   // OpenCode Zen 免费模型仅支持 Chat Completions，不支持 Responses API
-  if (
-    provider === "openai" &&
-    config.OPENAI_BASE_URL?.includes("opencode.ai")
-  ) {
-    return providerList.openai.chat(modelName);
+  if (OPENCODE_ZEN) {
+    return wrapModel(providerList.openai.chat(modelName));
   }
   return providerList[provider](modelName);
 }

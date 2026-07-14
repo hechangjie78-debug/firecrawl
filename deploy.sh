@@ -392,7 +392,7 @@ NUQ_DATABASE_URL_LISTEN=postgresql://${PG_USER}:${PG_PASS}@localhost:5432/${PG_D
 NUQ_RABBITMQ_URL=amqp://guest:guest@localhost:5672
 
 # Playwright 渲染服务
-PLAYWRIGHT_MICROSERVICE_URL=http://localhost:${PLAYWRIGHT_PORT}
+PLAYWRIGHT_MICROSERVICE_URL=http://localhost:${PLAYWRIGHT_PORT}/scrape
 
 # Worker 配置
 NUQ_WORKER_COUNT=${NUQ_WORKER_COUNT}
