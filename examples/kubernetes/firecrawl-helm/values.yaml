@@ -1,10 +1,34 @@
+###############################################################################
+# Firecrawl Helm Values 配置文件（默认模板）
+#
+# 这是 Firecrawl Helm Chart 的默认参数文件。
+# 使用时建议复制一份（如 values-override.yaml），
+# 在里面只写你要覆盖的字段，Helm 会自动合并默认值。
+#
+# 如果某个组件在这里有 resources（CPU/内存限制）但你不想限制，
+# 在你的 override 文件里设置 resources.enabled: false 即可。
+#
+# Helm 安装命令参考:
+#   helm install firecrawl ./firecrawl-helm -f values-override.yaml -n firecrawl
+###############################################################################
+
+# ========== 全局副本数 ==========
+# 所有组件的默认 Pod 副本数，下面各组件的 replicaCount 会覆盖这个值
 replicaCount: 1
 
+# ========== 全局资源限制开关 ==========
+# false = 不启用下面的 resources 默认值
+# 注意: API、Worker 等组件各自有独立的 resources 段，不受这个开关影响
 resources:
   enabled: false
 
+# ========== API 服务 ==========
+# Firecrawl 主 API 服务，提供 REST 接口（/v0/scrape、/v2/crawl 等）
 api:
   replicaCount: 1
+  # K8s 资源限制（requests=保证最少给多少，limits=最多用多少）
+  # 格式: 内存 "4G" = 4GB，CPU "2000m" = 2 个核
+  # 超过 limits 会被 K8s 杀掉（OOMKill 或 CPU 节流）
   resources:
     requests:
       memory: "4G"
@@ -13,6 +37,8 @@ api:
       memory: "6G"
       cpu: "2000m"
 
+# ========== Worker 服务 ==========
+# 后台任务处理器，负责实际的网页抓取执行
 worker:
   replicaCount: 1
   port: 3005
@@ -24,6 +50,8 @@ worker:
       memory: "4G"
       cpu: "1000m"
 
+# ========== 提取 Worker ==========
+# 从抓取结果中提取结构化数据（如 LLM 提取、CSS 选择器提取等）
 extractWorker:
   enabled: true
   replicaCount: 1
@@ -36,6 +64,9 @@ extractWorker:
       memory: "3G"
       cpu: "1000m"
 
+# ========== NUQ Worker ==========
+# NUQ = "Not Ugly Queue" - Firecrawl 内部的消息队列服务
+# 负责调度任务给各个 Worker
 nuqWorker:
   replicaCount: 5
   port: 3006
@@ -47,6 +78,8 @@ nuqWorker:
       memory: "4G"
       cpu: "1000m"
 
+# ========== NUQ 预取 Worker ==========
+# 预先从队列拉取任务，减少等待时间，提升吞吐
 nuqPrefetchWorker:
   enabled: true
   replicaCount: 1
@@ -59,10 +92,12 @@ nuqPrefetchWorker:
       memory: "2G"
       cpu: "1000m"
 
+# ========== NUQ Postgres 数据库 ==========
+# NUQ 使用 PostgreSQL 持久化队列数据
 nuqPostgres:
   replicaCount: 1
   image:
-    repository: docker.io/winkkgmbh/nuq-postgres
+    repository: docker.io/winkkgmbh/nuq-postgres   # docker.io 是 Docker Hub
     tag: latest
     pullPolicy: Always
   auth:
@@ -77,10 +112,13 @@ nuqPostgres:
       memory: "1Gi"
       cpu: "500m"
   persistence:
-    enabled: false
-    size: 10Gi
-    storageClass: ""
+    enabled: false    # false=不持久化，Pod 重启后数据丢失（生产建议 true）
+    size: 10Gi        # 如果启用持久化，申请 10GB 磁盘
+    storageClass: ""   # 留空=使用默认 StorageClass
 
+# ========== RabbitMQ 消息队列 ==========
+# 用于 API 和 Worker 之间的异步通信
+# management 标签带 Web 管理界面（端口 15672）
 rabbitmq:
   enabled: true
   image: rabbitmq:3-management
@@ -93,22 +131,33 @@ rabbitmq:
       memory: "1Gi"
       cpu: "500m"
 
+# ========== 主应用镜像 ==========
+# Firecrawl 主镜像，包含 api、worker 等所有组件代码
 image:
-  repository: docker.io/winkkgmbh/firecrawl
+  repository: docker.io/winkkgmbh/firecrawl   # Docker Hub 上的镜像
   tag: "latest"
-  pullPolicy: Always
-  dockerSecretEnabled: false
+  pullPolicy: Always           # Always=每次启动重新拉取
+  dockerSecretEnabled: false   # false=不从 K8s Secret 拉取私有镜像
 
+# ========== Playwright 浏览器服务 ==========
+# 用于渲染 JavaScript 页面（SPA 应用等）
 playwright:
   repository: docker.io/winkkgmbh/firecrawl-playwright
   tag: "latest"
   pullPolicy: Always
   replicaCount: 1
 
+# ========== Redis 缓存 ==========
+# 用途: 缓存抓取结果、速率限制、任务队列中间层
 redis:
-  image: redis:alpine
+  image: redis:alpine   # alpine 版本体积更小
   replicaCount: 1
 
+# ========== 网络服务类型与端口 ==========
+# K8s Service 类型:
+#   ClusterIP - 只能在集群内部访问
+#   NodePort  - 通过节点 IP + 固定端口外部访问
+#   LoadBalancer - 需要云厂商 LB（本地环境不支持）
 service:
   api:
     type: ClusterIP
@@ -118,24 +167,27 @@ service:
     port: 3000
   redis:
     type: ClusterIP
-    port: 6379
+    port: 6379          # Redis 默认端口
   rabbitmq:
     type: ClusterIP
-    port: 5672
-    managementPort: 15672
+    port: 5672          # AMQP 协议端口
+    managementPort: 15672  # RabbitMQ 管理界面端口
 
+# ========== 应用配置（环境变量） ==========
+# 会以环境变量形式注入到所有容器
+# 空字符串 = 不设置，应用使用内部默认值
 config:
-  NUM_WORKERS_PER_QUEUE: "8"
+  NUM_WORKERS_PER_QUEUE: "8"    # 每个 Pod 内部的并发处理线程数
   PORT: "3002"
-  HOST: "0.0.0.0"
+  HOST: "0.0.0.0"               # 监听所有网络接口
   WORKER_PORT: "3005"
   EXTRACT_WORKER_PORT: "3004"
   NUQ_WORKER_PORT: "3006"
   NUQ_PREFETCH_WORKER_PORT: "3011"
-  NUQ_WORKER_COUNT: "5"
-  USE_DB_AUTHENTICATION: "false"
-  IS_KUBERNETES: "true"
-  ENV: "production"
+  NUQ_WORKER_COUNT: "5"         # NUQ Worker Pod 的数量
+  USE_DB_AUTHENTICATION: "false" # false=无需登录（生产建议 true）
+  IS_KUBERNETES: "true"          # 告知应用运行在 K8s 环境
+  ENV: "production"              # production / development
   LOGGING_LEVEL: "INFO"
   FIRECRAWL_APP_SCHEME: "http"
   FIRECRAWL_APP_HOST: ""
@@ -146,29 +198,33 @@ config:
   NUQ_DATABASE_URL: ""
   NUQ_DATABASE_URL_LISTEN: ""
   NUQ_RABBITMQ_URL: ""
-  OPENAI_BASE_URL: ""
-  MODEL_NAME: ""
-  MODEL_EMBEDDING_NAME: ""
-  OLLAMA_BASE_URL: ""
-  PROXY_SERVER: ""
+  OPENAI_BASE_URL: ""            # OpenAI API 地址（可用第三方兼容 API）
+  MODEL_NAME: ""                 # LLM 模型名，如 gpt-4o
+  MODEL_EMBEDDING_NAME: ""       # 向量模型，如 text-embedding-3-small
+  OLLAMA_BASE_URL: ""            # Ollama 本地 LLM 地址
+  PROXY_SERVER: ""               # HTTP 代理，用于突破 IP 限制
   PROXY_USERNAME: ""
-  SEARXNG_ENDPOINT: ""
+  SEARXNG_ENDPOINT: ""           # 自建搜索引擎地址
   SEARXNG_ENGINES: ""
   SEARXNG_CATEGORIES: ""
-  SELF_HOSTED_WEBHOOK_URL: ""
-  extra: {}
+  SELF_HOSTED_WEBHOOK_URL: ""    # 自托管回调地址
+  extra: {}                      # 额外的自定义环境变量
 
+# ========== Playwright 专属配置 ==========
 playwrightConfig:
   PORT: "3000"
-  ALLOW_LOCAL_WEBHOOKS: ""
-  BLOCK_MEDIA: ""
-  MAX_CONCURRENT_PAGES: "10"
+  ALLOW_LOCAL_WEBHOOKS: ""        # 留空=不处理，可填 "true" 允许内网回掉
+  BLOCK_MEDIA: ""                 # 留空=加载所有资源，可填 "image,video" 加速
+  MAX_CONCURRENT_PAGES: "10"      # 浏览器最大并发页面数
 
+# ========== 敏感信息（Secret） ==========
+# 写入 K8s Secret 资源，容器启动时注入为环境变量
+# 生产环境建议用 base64 编码或外部密钥管理（Vault）
 secret:
   OPENAI_API_KEY: ""
   SLACK_WEBHOOK_URL: ""
   LLAMAPARSE_API_KEY: ""
-  BULL_AUTH_KEY: ""
+  BULL_AUTH_KEY: ""               # Bull 管理界面密码
   TEST_API_KEY: ""
   FIRE_ENGINE_BETA_URL: ""
   SUPABASE_ANON_TOKEN: ""
@@ -179,5 +235,7 @@ secret:
   REDIS_PASSWORD: ""
   extra: {}
 
+# ========== 镜像拉取凭据 ==========
+# 如果使用私有镜像仓库，在这里指定 K8s Secret 名称
 imagePullSecrets:
   - name: docker-registry-secret

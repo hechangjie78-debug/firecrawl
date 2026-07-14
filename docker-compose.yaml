@@ -1,10 +1,9 @@
 name: firecrawl
 
 x-common-service: &common-service
-  # NOTE: If you don't want to build the service locally,
-  # comment out the build: statement and uncomment the image: statement
-  # image: ghcr.io/firecrawl/firecrawl
-  build: apps/api
+  image: ghcr.io/firecrawl/firecrawl
+  # To build from source, comment out image: and uncomment build:
+  # build: apps/api
 
   ulimits:
     nofile:
@@ -58,10 +57,9 @@ x-common-env: &common-env
 
 services:
   playwright-service:
-    # NOTE: If you don't want to build the service locally,
-    # comment out the build: statement and uncomment the image: statement
-    # image: ghcr.io/firecrawl/playwright-service:latest
-    build: apps/playwright-service-ts
+    image: ghcr.io/firecrawl/playwright-service:latest
+    # To build from source, comment out image: and uncomment build:
+    # build: apps/playwright-service-ts
     environment:
       PORT: 3000
       PROXY_SERVER: ${PROXY_SERVER}
@@ -149,10 +147,9 @@ services:
         compress: "true"
   
   nuq-postgres:
-    # NOTE: If you don't want to build the image locally,
-    # comment out the build: statement and uncomment the image: statement
-    # image: ghcr.io/firecrawl/nuq-postgres:latest
-    build: apps/nuq-postgres
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    # To build from source, comment out image: and uncomment build:
+    # build: apps/nuq-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
