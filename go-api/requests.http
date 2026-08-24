@@ -1,0 +1,14 @@
+### 健康检查接口
+GET http://localhost:3002/health
+Content-Type: application/json
+
+### POST /v1/scrape 单页抓取与 Markdown 转换测试
+POST http://localhost:3002/v1/scrape
+Authorization: Bearer test_api_key_123456
+Content-Type: application/json
+
+{
+  "url": "https://example.com",
+  "formats": ["markdown", "html"],
+  "onlyMainContent": true
+}

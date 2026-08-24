@@ -1,0 +1,133 @@
+name: firecrawl-microservices
+
+x-common-env: &common-env
+  REDIS_URL: redis://:he123@209.33.176.8:6379
+  REDIS_RATE_LIMIT_URL: redis://:he123@209.33.176.8:6379
+  PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+  POSTGRES_USER: root
+  POSTGRES_PASSWORD: he123
+  POSTGRES_DB: postgres
+  POSTGRES_HOST: 209.33.176.8
+  POSTGRES_PORT: 5432
+  USE_DB_AUTHENTICATION: "false"
+  NUM_WORKERS_PER_QUEUE: 8
+  CRAWL_CONCURRENT_REQUESTS: 10
+  MAX_CONCURRENT_JOBS: 5
+
+networks:
+  microservices-network:
+    driver: bridge
+
+services:
+  # 1. 基础架构 - RabbitMQ 消息队列 (位于 209.33.176.13)
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: firecrawl-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - microservices-network
+
+  # 2. 统一高性能网关 - Go API 引擎微服务 (重构替换原 Node.js API Gateway)
+  go-api:
+    build:
+      context: ./go-api
+    image: cangku.hechangjie.fun/firecrawl/go-api:latest
+    container_name: firecrawl-go-api
+    environment:
+      <<: *common-env
+      PORT: 3002
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+      HTML_TO_MD_SERVICE_URL: http://go-html-to-md-service:8080/convert
+    ports:
+      - "3002:3002"
+    depends_on:
+      - rabbitmq
+      - playwright-service
+      - go-html-to-md-service
+    networks:
+      - microservices-network
+
+  # 3. 微服务 - Queue Worker 抓取队列微服务
+  queue-worker:
+    build:
+      context: ./queue-worker
+    image: cangku.hechangjie.fun/firecrawl/queue-worker:latest
+    container_name: firecrawl-queue-worker
+    environment:
+      <<: *common-env
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+    depends_on:
+      - rabbitmq
+      - playwright-service
+    networks:
+      - microservices-network
+
+  # 4. 微服务 - Extract Worker 数据提取微服务
+  extract-worker:
+    build:
+      context: ./extract-worker
+    image: cangku.hechangjie.fun/firecrawl/extract-worker:latest
+    container_name: firecrawl-extract-worker
+    environment:
+      <<: *common-env
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+    depends_on:
+      - rabbitmq
+    networks:
+      - microservices-network
+
+  # 5. 微服务 - Index Worker 索引微服务
+  index-worker:
+    build:
+      context: ./index-worker
+    image: cangku.hechangjie.fun/firecrawl/index-worker:latest
+    container_name: firecrawl-index-worker
+    environment:
+      <<: *common-env
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+    depends_on:
+      - rabbitmq
+    networks:
+      - microservices-network
+
+  # 6. 微服务 - Playwright 浏览器渲染服务
+  playwright-service:
+    build:
+      context: ./playwright-service
+    image: cangku.hechangjie.fun/firecrawl/playwright-service:latest
+    container_name: firecrawl-playwright
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: 10
+      ALLOW_LOCAL_WEBHOOKS: "true"
+    ports:
+      - "3000:3000"
+    networks:
+      - microservices-network
+
+  # 7. 微服务 - Go HTML-to-MD 转码微服务
+  go-html-to-md-service:
+    build:
+      context: ./go-html-to-md-service
+    image: cangku.hechangjie.fun/firecrawl/go-html-to-md-service:latest
+    container_name: firecrawl-go-html-to-md
+    ports:
+      - "8085:8080"
+    networks:
+      - microservices-network
+
+  # 8. 微服务 - UI 前端展示微服务
+  ui:
+    build:
+      context: ./dashboard
+    image: cangku.hechangjie.fun/firecrawl/ui:latest
+    container_name: firecrawl-ui
+    ports:
+      - "32088:80"
+    depends_on:
+      - go-api
+    networks:
+      - microservices-network
