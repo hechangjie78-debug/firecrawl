@@ -97,6 +97,20 @@ services:
       - microservices-network
     restart: unless-stopped
 
+  # 3.5 搜索引擎微服务 - SearXNG (为 POST /v1/search 提供真实搜索支持)
+  searxng:
+    image: searxng/searxng:latest
+    container_name: firecrawl-searxng
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8081/
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
   # 4. 统一高性能网关与核心调度 - Go API 引擎微服务 (端口 3002)
   go-api:
     build:
@@ -109,6 +123,7 @@ services:
       NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
       PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
       HTML_TO_MD_SERVICE_URL: http://go-html-to-md-service:8080/convert
+      SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT:-http://searxng:8080}
     ports:
       - "3002:3002"
     depends_on:
@@ -119,6 +134,8 @@ services:
       playwright-service:
         condition: service_started
       go-html-to-md-service:
+        condition: service_started
+      searxng:
         condition: service_started
     networks:
       - microservices-network

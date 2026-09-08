@@ -8,26 +8,29 @@ import (
 type SearchRequest struct {
 	Query         string        `json:"query" binding:"required"`
 	Limit         int           `json:"limit,omitempty"`
+	Lang          string        `json:"lang,omitempty"`
+	Country       string        `json:"country,omitempty"`
+	Location      string        `json:"location,omitempty"`
 	ScrapeOptions ScrapeRequest `json:"scrapeOptions,omitempty"`
 }
 
 // SearchResultItem 搜索抓取单项结果
 type SearchResultItem struct {
-	URL         string    `json:"url"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Markdown    string    `json:"markdown,omitempty"`
-	HTML        string    `json:"html,omitempty"`
+	URL         string            `json:"url"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Markdown    string            `json:"markdown,omitempty"`
+	HTML        string            `json:"html,omitempty"`
 	RawHTML     string            `json:"rawHtml,omitempty"`
 	Metadata    *DocumentMetadata `json:"metadata,omitempty"`
 }
 
 // SearchResponse POST /v1/search 的输出响应结构
 type SearchResponse struct {
-	Success bool               `json:"success"`
+	Success bool                `json:"success"`
 	Data    []*SearchResultItem `json:"data"`
-	Warning string             `json:"warning,omitempty"`
-	Error   string             `json:"error,omitempty"`
+	Warning string              `json:"warning,omitempty"`
+	Error   string              `json:"error,omitempty"`
 }
 
 // ExtractRequest POST /v1/extract 结构化提取请求定义

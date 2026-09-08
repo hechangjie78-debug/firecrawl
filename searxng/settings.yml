@@ -1,0 +1,29 @@
+# SearXNG configuration for Firecrawl
+use_default_settings: true
+
+server:
+  secret_key: "firecrawl_searxng_secret_key_random_value"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "auto"
+  formats:
+    - html
+    - json
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    enable: true
+  - name: google
+    engine: google
+    shortcut: go
+    enable: true
+  - name: bing
+    engine: bing
+    shortcut: bi
+    enable: true

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/firecrawl/go-api/handlers"
@@ -356,5 +357,94 @@ func TestLiveTCPServer(t *testing.T) {
 	defer respStatus.Body.Close()
 	if respStatus.StatusCode != http.StatusOK {
 		t.Errorf("Expected 200 for deep research status, got %d", respStatus.StatusCode)
+	}
+}
+
+func TestSearchWithoutSearxng(t *testing.T) {
+	r := setupTestRouter()
+	os.Unsetenv("SEARXNG_ENDPOINT")
+
+	// 1. 普通关键字且未配置 SEARXNG_ENDPOINT 时应明确报错，不返回伪造写死数据
+	reqBody := models.SearchRequest{
+		Query: "golang web crawler",
+		Limit: 2,
+	}
+	w := executeRequest(r, "POST", "/v1/search", reqBody, nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Expected 500 when SEARXNG_ENDPOINT is unconfigured, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. 如果 query 本身是完整 URL，允许直接作为候选目标
+	urlReqBody := models.SearchRequest{
+		Query: "https://example.com",
+		Limit: 1,
+	}
+	wURL := executeRequest(r, "POST", "/v1/search", urlReqBody, nil)
+	if wURL.Code != http.StatusOK {
+		t.Errorf("Expected 200 when search query is direct URL, got %d: %s", wURL.Code, wURL.Body.String())
+	}
+}
+
+func TestSearchWithSearxng(t *testing.T) {
+	// 启动模拟 SearXNG 服务
+	mockSearxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query().Get("q")
+		if q == "" {
+			http.Error(w, "missing query", http.StatusBadRequest)
+			return
+		}
+
+		respData := map[string]interface{}{
+			"query":             q,
+			"number_of_results": 2,
+			"results": []map[string]interface{}{
+				{
+					"url":     "https://example.com/test1",
+					"title":   "Test Result 1",
+					"content": "This is test content 1",
+				},
+				{
+					"url":     "https://example.com/test2",
+					"title":   "Test Result 2",
+					"content": "This is test content 2",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(respData)
+	}))
+	defer mockSearxng.Close()
+
+	os.Setenv("SEARXNG_ENDPOINT", mockSearxng.URL)
+	defer os.Unsetenv("SEARXNG_ENDPOINT")
+
+	r := setupTestRouter()
+	reqBody := models.SearchRequest{
+		Query: "firecrawl modern crawler",
+		Limit: 2,
+	}
+
+	w := executeRequest(r, "POST", "/v1/search", reqBody, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 from search with SearXNG, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp models.SearchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse search response: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatalf("Expected success to be true")
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("Expected 2 search results from SearXNG mock, got %d", len(resp.Data))
+	}
+	if resp.Data[0].URL != "https://example.com/test1" && resp.Data[1].URL != "https://example.com/test1" {
+		t.Errorf("Expected result URL to match SearXNG mock response")
 	}
 }

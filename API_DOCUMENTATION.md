@@ -379,12 +379,24 @@
 
 ### 5.2 网页智能搜索
 - **接口地址**: `POST /v1/search`
-- **说明**: 搜索指定关键字，并自动抓取命中的网页转换为 Markdown。
+- **说明**: 依赖 SearXNG 实例执行公网搜索，并自动并发抓取命中结果转换为 Markdown / HTML。
+- **环境配置**:
+  - `SEARXNG_ENDPOINT`: SearXNG 实例服务地址 (如 `http://searxng:8080` 或公网 SearXNG 地址)。
+  - `SEARXNG_ENGINES`: (可选) 优先调用的引擎 (如 `google,bing,duckduckgo`)。
+  - `SEARXNG_CATEGORIES`: (可选) 搜索分类 (默认通用搜索)。
 - **请求体 (JSON)**:
+  | 参数名 | 类型 | 必填 | 说明 |
+  | :--- | :--- | :--- | :--- |
+  | `query` | string | 是 | 搜索关键字或完整 URL |
+  | `limit` | int | 否 | 抓取的最大搜索结果数，默认 `5` |
+  | `lang` | string | 否 | 搜索语言代码 (例如 `zh`, `en`) |
+  | `scrapeOptions` | object | 否 | 命中的结果页抓取选项 (同 `ScrapeRequest`) |
+- **请求示例**:
   ```json
   {
     "query": "Firecrawl architecture",
     "limit": 5,
+    "lang": "en",
     "scrapeOptions": {
       "formats": ["markdown"]
     }

@@ -2,9 +2,12 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +16,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
+
+// SearxngResultItem 表示从 SearXNG 解析出来的单项搜索结果
+type SearxngResultItem struct {
+	URL         string
+	Title       string
+	Description string
+}
+
+// SearxngSearchResponse 定义 SearXNG JSON API 返回结构
+type SearxngSearchResponse struct {
+	Query           string `json:"query"`
+	NumberOfResults int    `json:"number_of_results"`
+	Results         []struct {
+		URL     string `json:"url"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+		Engine  string `json:"engine"`
+	} `json:"results"`
+}
 
 // ExtractService 专门负责网页搜索聚合与智能 LLM 结构化提取的服务层
 type ExtractService struct {
@@ -49,63 +71,82 @@ func (s *ExtractService) ExecuteSearch(ctx context.Context, req *models.SearchRe
 		limit = 5 // 默认自动并发抓取前 5 条结果页
 	}
 
-	// 1. 获取搜索候选目标 URLs 列表
-	searchCandidateURLs := s.performSearchQuery(ctx, query, limit)
-	if len(searchCandidateURLs) == 0 {
-		// 备用兜底候选 URLs
-		searchCandidateURLs = []string{
-			"https://www.911proxy.com/",
-			"https://www.xcrawl.com/",
-		}
+	// 1. 调用 SearXNG 获取真实公网搜索候选目标列表
+	candidates, err := s.fetchSearxngCandidates(ctx, query, limit, req.Lang)
+	if err != nil {
+		return nil, err
 	}
 
-	log.Info().Str("query", query).Int("candidateCount", len(searchCandidateURLs)).Msg("开始并发抓取搜索结果页内容")
+	if len(candidates) == 0 {
+		log.Info().Str("query", query).Msg("SearXNG 搜索结果为空")
+		return []*models.SearchResultItem{}, nil
+	}
+
+	log.Info().Str("query", query).Int("candidateCount", len(candidates)).Msg("开始并发抓取 SearXNG 搜索结果页内容")
 
 	// 2. 使用协程池并发抓取所有搜索结果页
-	results := make([]*models.SearchResultItem, 0, len(searchCandidateURLs))
+	results := make([]*models.SearchResultItem, 0, len(candidates))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
 	semaphore := make(chan struct{}, 5)
 
-	for _, targetURL := range searchCandidateURLs {
+	for _, cand := range candidates {
 		semaphore <- struct{}{}
 		wg.Add(1)
 
-		go func(u string) {
+		go func(c SearxngResultItem) {
 			defer func() {
 				<-semaphore
 				wg.Done()
 			}()
 
 			scrapeOpt := req.ScrapeOptions
-			scrapeOpt.URL = u
+			scrapeOpt.URL = c.URL
 
-			doc, err := s.scrapeService.ExecuteScrape(ctx, &scrapeOpt, "search-"+u)
+			title := c.Title
+			desc := c.Description
+			var md string
+			var htmlStr string
+			var metadata *models.DocumentMetadata
+
+			doc, err := s.scrapeService.ExecuteScrape(ctx, &scrapeOpt, "search-"+c.URL)
 			if err != nil {
-				log.Warn().Err(err).Str("url", u).Msg("搜索结果页单项抓取失败")
-				return
+				log.Warn().Err(err).Str("url", c.URL).Msg("搜索结果页单项抓取失败，保留基本搜索元数据")
+				metadata = &models.DocumentMetadata{
+					StatusCode: 500,
+					Error:      err.Error(),
+					SourceURL:  c.URL,
+				}
+			} else {
+				if doc.Metadata.Title != "" {
+					title = doc.Metadata.Title
+				}
+				if doc.Metadata.Description != "" {
+					desc = doc.Metadata.Description
+				}
+				md = doc.Markdown
+				htmlStr = doc.HTML
+				metadata = &doc.Metadata
 			}
 
-			title := doc.Metadata.Title
 			if title == "" {
-				title = u
+				title = c.URL
 			}
-			desc := doc.Metadata.Description
 
 			item := &models.SearchResultItem{
-				URL:         u,
+				URL:         c.URL,
 				Title:       title,
 				Description: desc,
-				Markdown:    doc.Markdown,
-				HTML:        doc.HTML,
-				Metadata:    &doc.Metadata,
+				Markdown:    md,
+				HTML:        htmlStr,
+				Metadata:    metadata,
 			}
 
 			mu.Lock()
 			results = append(results, item)
 			mu.Unlock()
-		}(targetURL)
+		}(cand)
 	}
 
 	wg.Wait()
@@ -113,28 +154,80 @@ func (s *ExtractService) ExecuteSearch(ctx context.Context, req *models.SearchRe
 	return results, nil
 }
 
-// performSearchQuery 模拟执行公网搜索并获取匹配极佳的网页列表
-func (s *ExtractService) performSearchQuery(ctx context.Context, query string, limit int) []string {
-	// 支持解析查询中的域名或智能搜索匹配
-	candidates := make([]string, 0)
-	lowerQuery := strings.ToLower(query)
-
-	if strings.Contains(lowerQuery, "proxy") || strings.Contains(lowerQuery, "911") {
-		candidates = append(candidates, "https://www.911proxy.com/", "https://www.911proxy.com/pricing/")
-	}
-	if strings.Contains(lowerQuery, "crawl") || strings.Contains(lowerQuery, "scraper") || strings.Contains(lowerQuery, "ai") {
-		candidates = append(candidates, "https://www.xcrawl.com/", "https://www.xcrawl.com/serp-api/")
-	}
-
-	// 如果查询包含完整 URL，直接作为候选
-	if strings.HasPrefix(lowerQuery, "http://") || strings.HasPrefix(lowerQuery, "https://") {
-		candidates = append([]string{query}, candidates...)
+// fetchSearxngCandidates 通过 SearXNG 实例执行真实搜索
+func (s *ExtractService) fetchSearxngCandidates(ctx context.Context, query string, limit int, lang string) ([]SearxngResultItem, error) {
+	searxngEndpoint := strings.TrimSpace(os.Getenv("SEARXNG_ENDPOINT"))
+	if searxngEndpoint == "" {
+		// 如果查询本身就是一个完整的 HTTP/HTTPS URL，直接将其作为候选抓取目标
+		lowerQuery := strings.ToLower(query)
+		if strings.HasPrefix(lowerQuery, "http://") || strings.HasPrefix(lowerQuery, "https://") {
+			return []SearxngResultItem{{URL: query, Title: query}}, nil
+		}
+		return nil, fmt.Errorf("SEARXNG_ENDPOINT is not configured, search requires a SearXNG instance")
 	}
 
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
+	searchURL := strings.TrimRight(searxngEndpoint, "/") + "/search"
+	u, err := url.Parse(searchURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SEARXNG_ENDPOINT: %w", err)
 	}
-	return candidates
+
+	q := u.Query()
+	q.Set("q", query)
+	q.Set("format", "json")
+	q.Set("pageno", "1")
+
+	if lang != "" {
+		q.Set("language", lang)
+	}
+	if engines := os.Getenv("SEARXNG_ENGINES"); engines != "" {
+		q.Set("engines", engines)
+	}
+	if categories := os.Getenv("SEARXNG_CATEGORIES"); categories != "" {
+		q.Set("categories", categories)
+	}
+
+	u.RawQuery = q.Encode()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create searxng request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", "Firecrawl-Go/1.0")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("searxng request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("searxng returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var searxResp SearxngSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searxResp); err != nil {
+		return nil, fmt.Errorf("failed to parse searxng response: %w", err)
+	}
+
+	candidates := make([]SearxngResultItem, 0, limit)
+	for _, r := range searxResp.Results {
+		if strings.TrimSpace(r.URL) == "" {
+			continue
+		}
+		candidates = append(candidates, SearxngResultItem{
+			URL:         r.URL,
+			Title:       r.Title,
+			Description: r.Content,
+		})
+		if len(candidates) >= limit {
+			break
+		}
+	}
+
+	return candidates, nil
 }
 
 // CreateExtractJob 提交网页结构化 JSON 提取任务 (POST /v1/extract)
